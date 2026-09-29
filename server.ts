@@ -20,7 +20,7 @@ app.use(express.json({ limit: '25mb' }));
 app.use(express.static(path.resolve(__dirname, 'public')));
 
 // Initialize Google GenAI with recommended server-side settings
-const apiKey = process.env.GEMINI_API_KEY;
+const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY;
 const ai = new GoogleGenAI({
   apiKey: apiKey,
   httpOptions: {
