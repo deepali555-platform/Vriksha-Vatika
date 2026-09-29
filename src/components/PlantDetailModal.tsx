@@ -26,6 +26,7 @@ import {
   AlertCircle,
   Clock,
   RotateCw,
+  RefreshCw,
   Plus,
   LogIn,
   User as UserIcon,
@@ -42,6 +43,7 @@ interface PlantDetailModalProps {
   onDelete: (id: string) => void;
   onToggleFavorite: (id: string, e: React.MouseEvent) => void;
   onToggleInMyGarden?: (plantId: string, e?: React.MouseEvent) => void;
+  isSavingGarden?: boolean;
   onDiagnosePlant?: (plantId: string) => void;
   onUpdatePhoto?: (plantId: string, photoDataUrl: string | null) => void;
   onOpenScanModal?: (plant: Plant) => void;
@@ -59,6 +61,7 @@ export const PlantDetailModal: React.FC<PlantDetailModalProps> = ({
   onDelete,
   onToggleFavorite,
   onToggleInMyGarden,
+  isSavingGarden = false,
   onDiagnosePlant,
   onUpdatePhoto,
   onOpenScanModal,
@@ -300,15 +303,29 @@ export const PlantDetailModal: React.FC<PlantDetailModalProps> = ({
                 {onToggleInMyGarden && (
                   <button
                     type="button"
+                    disabled={isSavingGarden}
                     onClick={() => onToggleInMyGarden(plant.id)}
-                    className={`inline-flex items-center justify-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all shadow-sm active:scale-95 min-h-[44px] ${
-                      isOwned
+                    className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all shadow-sm active:scale-95 min-h-[44px] cursor-pointer disabled:opacity-70 ${
+                      isSavingGarden
+                        ? 'bg-emerald-700 text-white border border-emerald-400/50'
+                        : isOwned
                         ? 'bg-emerald-500 hover:bg-rose-600 text-white border border-emerald-300/60'
                         : 'bg-white hover:bg-emerald-50 text-emerald-950 border border-white/80'
                     }`}
-                    title={isOwned ? 'In My Garden (Click to remove)' : 'Click to Add to My Garden'}
+                    title={
+                      isSavingGarden
+                        ? 'Saving to cloud...'
+                        : isOwned
+                        ? 'In My Garden (Click to remove)'
+                        : 'Click to Add to My Garden'
+                    }
                   >
-                    {isOwned ? (
+                    {isSavingGarden ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 text-emerald-200 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : isOwned ? (
                       <>
                         <CheckCircle2 className="w-4 h-4 text-white stroke-[2.5]" />
                         <span>In My Garden</span>

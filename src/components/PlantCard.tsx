@@ -1,7 +1,7 @@
 import React from 'react';
 import { Plant } from '../types/plant';
 import { PlantImage } from './PlantImage';
-import { Sun, Droplets, Flower2, Heart, Leaf, AlertTriangle, CheckCircle2, Plus, User as UserIcon } from 'lucide-react';
+import { Sun, Droplets, Flower2, Heart, Leaf, AlertTriangle, CheckCircle2, Plus, User as UserIcon, RefreshCw } from 'lucide-react';
 import { isPlantBloomingMonth, getPlantCategoryAccent } from '../utils/gardenHelpers';
 import { calculateFertilizerStatus } from '../utils/fertilizerHelpers';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,6 +12,7 @@ interface PlantCardProps {
   onSelect: (plant: Plant) => void;
   onToggleFavorite: (id: string, e: React.MouseEvent) => void;
   onToggleGarden?: (id: string, e: React.MouseEvent) => void;
+  isSavingGarden?: boolean;
   isHighlighted?: boolean;
 }
 
@@ -21,6 +22,7 @@ export const PlantCard: React.FC<PlantCardProps> = ({
   onSelect,
   onToggleFavorite,
   onToggleGarden,
+  isSavingGarden = false,
   isHighlighted = false,
 }) => {
   const { user } = useAuth();
@@ -151,18 +153,32 @@ export const PlantCard: React.FC<PlantCardProps> = ({
               {onToggleGarden && (
                 <button
                   type="button"
+                  disabled={isSavingGarden}
                   onClick={(e) => {
                     e.stopPropagation();
                     onToggleGarden(plant.id, e);
                   }}
-                  className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold tracking-tight transition-all active:scale-95 shadow-2xs min-h-[44px] shrink-0 ${
-                    isOwned
+                  className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold tracking-tight transition-all active:scale-95 shadow-2xs min-h-[44px] shrink-0 disabled:opacity-70 cursor-pointer ${
+                    isSavingGarden
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                      : isOwned
                       ? 'bg-emerald-100 hover:bg-rose-50 text-emerald-950 hover:text-rose-800 border border-emerald-300 hover:border-rose-300'
                       : 'bg-stone-100 hover:bg-emerald-100 text-stone-800 hover:text-emerald-950 border border-stone-200 hover:border-emerald-300'
                   }`}
-                  title={isOwned ? 'Currently In My Garden (Click to remove)' : 'Click to Add to My Garden'}
+                  title={
+                    isSavingGarden
+                      ? 'Saving to cloud...'
+                      : isOwned
+                      ? 'Currently In My Garden (Click to remove)'
+                      : 'Click to Add to My Garden'
+                  }
                 >
-                  {isOwned ? (
+                  {isSavingGarden ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-700" />
+                      <span>Saving...</span>
+                    </>
+                  ) : isOwned ? (
                     <>
                       <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 stroke-[2.4]" />
                       <span>In Garden</span>

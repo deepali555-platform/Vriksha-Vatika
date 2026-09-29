@@ -21,6 +21,7 @@ import { PlantHealthScannerModal } from './components/PlantHealthScannerModal';
 import { GardenFilters } from './components/GardenFilters';
 import { GardenStatsBar } from './components/GardenStatsBar';
 import { AdminView } from './components/AdminView';
+import { GardenDiagnosticModal } from './components/GardenDiagnosticModal';
 import { isUserAdmin } from './config/adminConfig';
 import {
   Sprout,
@@ -35,6 +36,7 @@ import {
   Search,
   X,
   Leaf,
+  Database,
   User as UserIcon,
 } from 'lucide-react';
 
@@ -42,6 +44,9 @@ export default function App() {
   const { user, loading: authLoading, isGuest } = useAuth();
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [isLoadingPlants, setIsLoadingPlants] = useState(true);
+  const [isDiagnosticModalOpen, setIsDiagnosticModalOpen] = useState(false);
+  const [savingGardenPlantIds, setSavingGardenPlantIds] = useState<Set<string>>(new Set());
+  const pendingWritesRef = useRef<Map<string, UserPlantStateDoc>>(new Map());
 
   const [plants, setPlants] = useState<Plant[]>([]);
   const [totalCatalogCount, setTotalCatalogCount] = useState<number | null>(null);
@@ -175,13 +180,25 @@ export default function App() {
       if (isCancelled) return;
 
       // Deduplicate the combined catalog (INITIAL_PLANTS + Firestore sharedPlants)
-      const uniqueReferenceCatalog = firestoreStorageService.deduplicatePlants([
+      const { uniqueList: uniqueReferenceCatalog, idAliasMap } = firestoreStorageService.deduplicatePlantsWithAliases([
         ...INITIAL_PLANTS,
         ...latestSharedPlants,
       ]);
 
       const merged: Plant[] = uniqueReferenceCatalog.map((basePlant) => {
-        const userState = userPlantStatesRef.current.get(basePlant.id);
+        // Direct ID lookup or alias ID lookup
+        const aliasIds = idAliasMap.get(basePlant.id) || [];
+        let userState = userPlantStatesRef.current.get(basePlant.id);
+        if (!userState) {
+          for (const aliasId of aliasIds) {
+            const candidate = userPlantStatesRef.current.get(aliasId);
+            if (candidate) {
+              userState = candidate;
+              break;
+            }
+          }
+        }
+
         const verified = VERIFIED_PLANT_IMAGES[basePlant.id];
 
         // CRITICAL: "In My Garden" status is strictly true IF AND ONLY IF the authenticated
@@ -201,8 +218,31 @@ export default function App() {
         };
       });
 
+      // SAFETY NET: Ensure that NO plant marked with inMyGarden: true in userPlantStatesRef is ever omitted!
+      if (user) {
+        const mergedIds = new Set(merged.map((p) => p.id));
+        userPlantStatesRef.current.forEach((uState, plantId) => {
+          if (uState.inMyGarden && !mergedIds.has(plantId)) {
+            const fallbackPlant =
+              latestSharedPlants.find((p) => p.id === plantId) ||
+              INITIAL_PLANTS.find((p) => p.id === plantId);
+            if (fallbackPlant) {
+              merged.push({
+                ...fallbackPlant,
+                inMyGarden: true,
+                isFavorite: Boolean(uState.isFavorite),
+                lastFertilizedDate: uState.lastFertilizedDate,
+                customPhotoUrl: uState.customPhotoUrl,
+                scanHistory: uState.scanHistory || [],
+              });
+              mergedIds.add(plantId);
+            }
+          }
+        });
+      }
+
       setPlants(merged);
-      setTotalCatalogCount(uniqueReferenceCatalog.length);
+      setTotalCatalogCount(merged.length);
       setIsLoadingPlants(false);
 
       // Requirement 8: Add a brief console log of how many plants were loaded from the database and how many are displayed, so I can verify they match.
@@ -223,16 +263,17 @@ export default function App() {
       // 1. Subscribe to user's private plant states in real-time
       unsubscribeUser = firestoreStorageService.subscribeToUserPlants(user.uid, (userStates) => {
         if (isCancelled) return;
-        userPlantStatesRef.current = userStates;
+        // Merge pending local in-flight writes so rapid additions are not wiped out
+        // by premature server snapshots before all writes complete!
+        const mergedStates = new Map(userStates);
+        pendingWritesRef.current.forEach((pendingDoc, plantId) => {
+          mergedStates.set(plantId, pendingDoc);
+        });
+        userPlantStatesRef.current = mergedStates;
         syncCatalogWithUserState();
       });
 
-      // 2. Perform one-time cleanup of auto-added creator plants if any exist
-      firestoreStorageService.cleanupAutoAddedPlants(user.uid).catch((err) => {
-        console.warn('Auto-add cleanup check error:', err);
-      });
-
-      // 3. Trigger background migration of any legacy custom plants
+      // 2. Trigger background migration of any legacy custom plants
       firestoreStorageService.migrateLegacyCustomPlants(user.uid, user).catch(() => {});
     } else {
       userPlantStatesRef.current = new Map();
@@ -409,10 +450,16 @@ export default function App() {
       e.stopPropagation();
     }
     const target = plants.find((p) => p.id === id);
+    if (!target) return;
+
     requireAuth(async () => {
-      const currentVal = Boolean(target?.inMyGarden);
+      const currentVal = Boolean(target.inMyGarden);
       const nextVal = !currentVal;
 
+      // Track saving state to display spinner on card and modal buttons
+      setSavingGardenPlantIds((prev) => new Set(prev).add(id));
+
+      // Optimistic update in UI
       setPlants((prev) => prev.map((p) => (p.id === id ? { ...p, inMyGarden: nextVal } : p)));
       if (selectedPlantForDetail?.id === id) {
         setSelectedPlantForDetail((prev) => (prev ? { ...prev, inMyGarden: nextVal } : null));
@@ -431,20 +478,65 @@ export default function App() {
           inMyGarden: nextVal,
           updatedAt: new Date().toISOString(),
         };
+
+        // Retain in pendingWritesRef so intermediate server onSnapshot callbacks don't overwrite
+        // in-flight additions during rapid successive taps!
+        pendingWritesRef.current.set(id, updatedState);
         userPlantStatesRef.current.set(id, updatedState);
-        if (target) {
+
+        try {
+          // Write to Firestore with timeout safety
           await firestoreStorageService.syncUserPlantState(user.uid, { ...target, inMyGarden: nextVal });
+
+          // Write confirmed in Firestore cloud!
+          pendingWritesRef.current.delete(id);
+          setSavingGardenPlantIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+
+          showToast(
+            nextVal
+              ? `✓ Added "${target.name}" to My Garden! (Saved to cloud)`
+              : `Removed "${target.name}" from My Garden`
+          );
+        } catch (err: any) {
+          // Revert optimistic update on Firestore error
+          pendingWritesRef.current.delete(id);
+          setSavingGardenPlantIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+
+          setPlants((prev) => prev.map((p) => (p.id === id ? { ...p, inMyGarden: currentVal } : p)));
+          if (selectedPlantForDetail?.id === id) {
+            setSelectedPlantForDetail((prev) => (prev ? { ...prev, inMyGarden: currentVal } : null));
+          }
+          if (existingState) {
+            userPlantStatesRef.current.set(id, existingState);
+          } else {
+            userPlantStatesRef.current.delete(id);
+          }
+
+          console.error(`[Add to My Garden Error] Failed to write plant "${target.name}" (${id}) to Firestore:`, err);
+          showToast(`⚠️ Could not save "${target.name}" to My Garden: ${err?.message || 'Network error'}. Please try again.`);
         }
       } else {
         storageService.toggleInMyGarden(id);
+        setSavingGardenPlantIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        showToast(
+          nextVal
+            ? `✓ Added "${target.name}" to My Garden!`
+            : `Removed "${target.name}" from My Garden`
+        );
       }
-
-      showToast(
-        nextVal
-          ? `Added ${target?.name || 'plant'} to My Garden!`
-          : `Removed ${target?.name || 'plant'} from My Garden`
-      );
-    }, `Sign in with Google to add ${target?.name || 'this plant'} to your garden and track care schedules.`);
+    }, `Sign in with Google to add ${target.name} to your garden and track care schedules.`);
   };
 
   const [showClearGardenConfirm, setShowClearGardenConfirm] = useState(false);
@@ -975,7 +1067,17 @@ export default function App() {
                     ))}
 
                     {user && (
-                      <div className="sm:ml-auto shrink-0">
+                      <div className="sm:ml-auto shrink-0 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsDiagnosticModalOpen(true)}
+                          className="min-h-[38px] px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-800 hover:text-emerald-950 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95"
+                          title="Query Firestore server directly to verify raw documents and restore missing plants"
+                        >
+                          <Database className="w-3.5 h-3.5 text-emerald-700" />
+                          <span>Cloud Diagnostic</span>
+                        </button>
+
                         {showClearGardenConfirm ? (
                           <div className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 rounded-full px-3 py-1">
                             <span className="text-[11px] font-bold text-rose-800">Clear all plants?</span>
@@ -1058,6 +1160,7 @@ export default function App() {
                           onSelect={(p) => setSelectedPlantForDetail(p)}
                           onToggleFavorite={handleToggleFavorite}
                           onToggleGarden={handleToggleInMyGarden}
+                          isSavingGarden={savingGardenPlantIds.has(plant.id)}
                           isHighlighted={highlightedPlantId === plant.id}
                         />
                       ))}
@@ -1206,6 +1309,7 @@ export default function App() {
                       onSelect={(p) => setSelectedPlantForDetail(p)}
                       onToggleFavorite={handleToggleFavorite}
                       onToggleGarden={handleToggleInMyGarden}
+                      isSavingGarden={savingGardenPlantIds.has(plant.id)}
                       isHighlighted={highlightedPlantId === plant.id}
                     />
                   ))}
@@ -1300,6 +1404,7 @@ export default function App() {
           onDelete={(id) => handleDeletePlant(id)}
           onToggleFavorite={handleToggleFavorite}
           onToggleInMyGarden={handleToggleInMyGarden}
+          isSavingGarden={savingGardenPlantIds.has(selectedPlantForDetail.id)}
           onDiagnosePlant={handleDiagnosePlant}
           onUpdatePhoto={handleUpdatePlantPhoto}
           onOpenScanModal={handleOpenScanModal}
@@ -1309,6 +1414,17 @@ export default function App() {
           isLoggedIn={Boolean(user)}
         />
       )}
+
+      {/* MODAL: Cloud Firestore Garden Storage Diagnostic & Recovery */}
+      <GardenDiagnosticModal
+        isOpen={isDiagnosticModalOpen}
+        onClose={() => setIsDiagnosticModalOpen(false)}
+        displayedPlants={plants}
+        onPlantRestored={() => {
+          // Re-sync is automatically handled by the Firestore onSnapshot listener
+        }}
+        onShowToast={showToast}
+      />
 
       {/* MODAL 2: Add / Edit Plant Form Modal */}
       {isFormModalOpen && (

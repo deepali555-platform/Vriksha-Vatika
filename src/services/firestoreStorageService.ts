@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDocs,
+  getDocsFromServer,
   setDoc,
   deleteDoc,
   query,
@@ -16,6 +17,54 @@ import { INITIAL_PLANTS } from '../data/seedPlants';
 import { VERIFIED_PLANT_IMAGES } from '../data/plantImages';
 import { storageService } from './storageService';
 import { isUserAdmin } from '../config/adminConfig';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export interface UserPlantStateDoc {
   id: string;
@@ -78,40 +127,56 @@ export function normalizePlantName(name: string): string {
 
 export function getPlantDeduplicationKey(plant: Partial<Plant>): {
   normalizedName: string;
-  primaryName: string;
   botanical: string;
 } {
   const normalizedName = normalizePlantName(plant.name || '');
-  // Extract primary name before parenthesis, slashes, or commas (e.g. "Sadabahar (Madagascar Periwinkle)" -> "sadabahar")
-  const primaryName = normalizePlantName((plant.name || '').split(/[\(/,]/)[0]);
   const botanical = normalizePlantName(plant.botanicalName || '');
-  return { normalizedName, primaryName, botanical };
+  return { normalizedName, botanical };
 }
 
 /**
- * Deduplicates a list of plants so plants with the exact same name (ignoring case and whitespace),
- * matching primary common names, or matching botanical names are treated as a single plant.
+ * Deduplicates plants with strict safety:
+ * - Only merges if ID is identical, full normalized name is identical, or valid binomial botanical name matches.
+ * - Tracks an alias mapping so that user garden states saved under aliased IDs are never lost.
  */
-export function deduplicatePlants(rawList: Plant[]): Plant[] {
+export function deduplicatePlantsWithAliases(rawList: Plant[]): {
+  uniqueList: Plant[];
+  idAliasMap: Map<string, string[]>; // Canonical ID -> list of aliased IDs
+} {
   const seenExact = new Map<string, Plant>();
-  const seenPrimary = new Map<string, Plant>();
   const seenBotanical = new Map<string, Plant>();
-  const seenId = new Set<string>();
+  const seenId = new Map<string, Plant>();
+  const idAliasMap = new Map<string, string[]>();
   const uniqueList: Plant[] = [];
 
   for (const plant of rawList) {
     if (!plant || !plant.name) continue;
-    if (seenId.has(plant.id)) continue;
 
-    const { normalizedName, primaryName, botanical } = getPlantDeduplicationKey(plant);
+    // Check existing by ID
+    const existingById = seenId.get(plant.id);
+    if (existingById) {
+      continue;
+    }
+
+    const { normalizedName, botanical } = getPlantDeduplicationKey(plant);
+
+    // Exact name match or strict binomial botanical match (must have 2 words to avoid generic genus match)
+    const isStrictBotanicalMatch =
+      Boolean(botanical && botanical.length > 5 && botanical.includes(' '));
 
     const existing =
       seenExact.get(normalizedName) ||
-      (botanical && seenBotanical.get(botanical)) ||
-      seenPrimary.get(primaryName);
+      (isStrictBotanicalMatch ? seenBotanical.get(botanical) : undefined);
 
     if (existing) {
-      // Keep rich seed metadata if available, but merge any user attribution or custom images
+      // Record alias so user private state referencing plant.id can be mapped to existing.id
+      const currentAliases = idAliasMap.get(existing.id) || [];
+      if (!currentAliases.includes(plant.id)) {
+        currentAliases.push(plant.id);
+        idAliasMap.set(existing.id, currentAliases);
+      }
+
+      // Merge creator attribution if missing
       if (plant.addedByUserId && !existing.addedByUserId) {
         existing.addedByUserId = plant.addedByUserId;
         existing.addedByUserEmail = plant.addedByUserEmail;
@@ -123,20 +188,27 @@ export function deduplicatePlants(rawList: Plant[]): Plant[] {
       continue;
     }
 
-    seenId.add(plant.id);
+    seenId.set(plant.id, plant);
     seenExact.set(normalizedName, plant);
-    seenPrimary.set(primaryName, plant);
-    if (botanical) {
+    if (isStrictBotanicalMatch) {
       seenBotanical.set(botanical, plant);
     }
     uniqueList.push(plant);
   }
 
-  return uniqueList;
+  return { uniqueList, idAliasMap };
+}
+
+/**
+ * Deduplicates a list of plants (convenience wrapper around deduplicatePlantsWithAliases)
+ */
+export function deduplicatePlants(rawList: Plant[]): Plant[] {
+  return deduplicatePlantsWithAliases(rawList).uniqueList;
 }
 
 export const firestoreStorageService = {
   deduplicatePlants,
+  deduplicatePlantsWithAliases,
   /**
    * Listens to real-time updates on the shared plants collection.
    * Fires whenever any user adds, edits, or removes a plant from the shared catalog.
@@ -165,7 +237,11 @@ export const firestoreStorageService = {
       },
       (err) => {
         console.warn('Real-time shared plants listener error:', err);
-        if (onError) onError(err);
+        if (onError) {
+          onError(err);
+        } else {
+          handleFirestoreError(err, OperationType.GET, 'sharedPlants');
+        }
       }
     );
   },
@@ -362,7 +438,11 @@ export const firestoreStorageService = {
       },
       (err) => {
         console.warn('Real-time user plants listener error:', err);
-        if (onError) onError(err);
+        if (onError) {
+          onError(err);
+        } else {
+          handleFirestoreError(err, OperationType.GET, `users/${userId}/userPlants`);
+        }
       }
     );
   },
@@ -474,7 +554,8 @@ export const firestoreStorageService = {
 
       await setDoc(doc(db, 'users', userId, 'userPlants', plant.id), sanitizeForFirestore(stateDoc), { merge: true });
     } catch (err) {
-      console.warn('Failed to sync plant state to Firestore:', err);
+      console.error('Failed to sync plant state to Firestore:', err);
+      handleFirestoreError(err, OperationType.WRITE, `users/${userId}/userPlants/${plant.id}`);
     }
   },
 
@@ -489,10 +570,13 @@ export const firestoreStorageService = {
       if (candidateKeys.normalizedName && existingKeys.normalizedName === candidateKeys.normalizedName) {
         return true;
       }
-      if (candidateKeys.botanical && existingKeys.botanical && candidateKeys.botanical === existingKeys.botanical) {
-        return true;
-      }
-      if (candidateKeys.primaryName && existingKeys.primaryName && candidateKeys.primaryName === existingKeys.primaryName) {
+      if (
+        candidateKeys.botanical &&
+        existingKeys.botanical &&
+        candidateKeys.botanical.length > 5 &&
+        candidateKeys.botanical.includes(' ') &&
+        candidateKeys.botanical === existingKeys.botanical
+      ) {
         return true;
       }
       return false;
@@ -620,45 +704,63 @@ export const firestoreStorageService = {
   },
 
   /**
-   * Cleans up user's private garden records: removes plants that were automatically added
-   * to the user's garden as a side effect of creating a plant or legacy migration.
-   * Only plants explicitly kept or added by the user remain in the garden.
+   * Safe no-op retained for backwards compatibility.
+   * CRITICAL: We NEVER mutate inMyGarden to false on login. If a user adds a plant to My Garden,
+   * it must always stay in My Garden.
    */
-  async cleanupAutoAddedPlants(userId: string): Promise<number> {
+  async cleanupAutoAddedPlants(_userId: string): Promise<number> {
+    return 0;
+  },
+
+  /**
+   * Directly queries the authenticated user's private `userPlants` subcollection
+   * from the Firestore server (bypassing local cache) for diagnostics and verification.
+   */
+  async fetchRawUserPlantDocuments(userId: string): Promise<{
+    docs: UserPlantStateDoc[];
+    inGardenCount: number;
+    totalDocs: number;
+    error?: string;
+  }> {
     try {
       const userPlantsRef = collection(db, 'users', userId, 'userPlants');
-      const snap = await getDocs(userPlantsRef);
-      if (snap.empty) return 0;
-
-      // Identify shared plants created by this user
-      const sharedPlants = await this.getSharedPlants();
-      const userCreatedPlantIds = new Set(
-        sharedPlants.filter((p) => p.addedByUserId === userId).map((p) => p.id)
-      );
-
-      let cleaned = 0;
-      for (const d of snap.docs) {
-        const data = d.data() as UserPlantStateDoc;
-        // If the plant was created by this user, has inMyGarden: true, but was auto-added without scans or custom photos:
-        // Set inMyGarden to false so user must explicitly add it.
-        if (data.inMyGarden && userCreatedPlantIds.has(d.id)) {
-          await setDoc(
-            d.ref,
-            sanitizeForFirestore({
-              ...data,
-              inMyGarden: false,
-              updatedAt: new Date().toISOString(),
-            }),
-            { merge: true }
-          );
-          cleaned++;
-        }
-      }
-      return cleaned;
-    } catch (err) {
-      console.warn('Could not clean up auto-added plants:', err);
-      return 0;
+      const snap = await getDocsFromServer(userPlantsRef);
+      const docs: UserPlantStateDoc[] = [];
+      snap.forEach((d) => {
+        docs.push(d.data() as UserPlantStateDoc);
+      });
+      const inGardenCount = docs.filter((d) => Boolean(d.inMyGarden)).length;
+      return {
+        docs,
+        inGardenCount,
+        totalDocs: docs.length,
+      };
+    } catch (err: unknown) {
+      console.error('Failed to fetch raw user plant documents:', err);
+      return {
+        docs: [],
+        inGardenCount: 0,
+        totalDocs: 0,
+        error: err instanceof Error ? err.message : 'Failed to query Firestore server',
+      };
     }
+  },
+
+  /**
+   * Restores a plant to the user's My Garden by setting inMyGarden: true in Firestore.
+   */
+  async restoreUserPlantToGarden(userId: string, plantId: string): Promise<void> {
+    const docRef = doc(db, 'users', userId, 'userPlants', plantId);
+    await setDoc(
+      docRef,
+      sanitizeForFirestore({
+        id: plantId,
+        userId,
+        inMyGarden: true,
+        updatedAt: new Date().toISOString(),
+      }),
+      { merge: true }
+    );
   },
 
   /**
