@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'aarya.bivalkar1605@gmail.com'
+      );
+    }
+
+    // User profile and subcollections are strictly private to the user
+    match /users/{userId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+
+      // Private garden state, ownership, fertilizer dates
+      match /userPlants/{plantId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
+      // Private custom plants added by the user
+      match /customPlants/{plantId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
+      // Any additional private subcollections (e.g. scan history)
+      match /{document=**} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Plants submitted by users for admin moderation
+    match /userSubmittedPlants/{submissionId} {
+      // Authenticated users can submit their own custom plants
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      // Admin can read all; original submitter can read their own
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      // Admin can update review status or delete
+      allow update, delete: if isAdmin();
+    }
+
+    // Global shared reference catalog plants
+    match /sharedPlants/{plantId} {
+      // Browsable by everyone (including guests who are not signed in)
+      allow read: if true;
+
+      // Only logged-in users can create new plants
+      allow create: if isAuthenticated();
+
+      // Only the creator or the admin can update or delete a plant
+      // Pre-populated plants (without addedByUserId) can only be edited or deleted by the admin
+      allow update, delete: if isAdmin() || (
+        isAuthenticated() && 
+        resource.data.addedByUserId != null && 
+        resource.data.addedByUserId == request.auth.uid
+      );
+    }
+
+    // System Backups and Database Maintenance - STRICTLY restricted to Admin
+    match /systemBackups/{backupId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /systemSettings/{settingId} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
