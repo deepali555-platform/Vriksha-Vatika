@@ -427,17 +427,22 @@ export const firestoreStorageService = {
     onError?: (err: Error) => void
   ): Unsubscribe {
     const userPlantsRef = collection(db, 'users', userId, 'userPlants');
+    console.log(`[Firestore MyGarden Load] Subscribing to real-time updates at path: users/${userId}/userPlants`);
     return onSnapshot(
       userPlantsRef,
       (snapshot) => {
+        console.log(`[Firestore MyGarden Load: Real-time Snapshot] Path: users/${userId}/userPlants | Raw doc count: ${snapshot.size}`);
         const userPlantStates = new Map<string, UserPlantStateDoc>();
         snapshot.forEach((docSnap) => {
-          userPlantStates.set(docSnap.id, docSnap.data() as UserPlantStateDoc);
+          const docData = docSnap.data() as UserPlantStateDoc;
+          console.log(`  -> [Retrieved from Firestore] Doc ID: "${docSnap.id}" | inMyGarden: ${docData.inMyGarden} | isFavorite: ${docData.isFavorite} | updatedAt: ${docData.updatedAt}`);
+          userPlantStates.set(docSnap.id, docData);
         });
+        console.log(`[Firestore MyGarden Load: Snapshot Complete] Total user plant states loaded: ${userPlantStates.size}`);
         onUpdate(userPlantStates);
       },
       (err) => {
-        console.warn('Real-time user plants listener error:', err);
+        console.error(`[Firestore MyGarden Load: Snapshot ERROR] Path: users/${userId}/userPlants:`, err);
         if (onError) {
           onError(err);
         } else {
@@ -453,13 +458,17 @@ export const firestoreStorageService = {
   async loadUserPlantStates(userId: string): Promise<Map<string, UserPlantStateDoc>> {
     const userPlantStates = new Map<string, UserPlantStateDoc>();
     try {
+      console.log(`[Firestore MyGarden Load: getDocs] Querying users/${userId}/userPlants...`);
       const userPlantsRef = collection(db, 'users', userId, 'userPlants');
       const snap = await getDocs(userPlantsRef);
+      console.log(`[Firestore MyGarden Load: getDocs SUCCESS] Retrieved ${snap.size} documents for user ${userId}`);
       snap.forEach((docSnap) => {
-        userPlantStates.set(docSnap.id, docSnap.data() as UserPlantStateDoc);
+        const docData = docSnap.data() as UserPlantStateDoc;
+        console.log(`  -> [getDocs Doc] ID: "${docSnap.id}" | inMyGarden: ${docData.inMyGarden}`);
+        userPlantStates.set(docSnap.id, docData);
       });
     } catch (err) {
-      console.warn('Failed to load private userPlantStates:', err);
+      console.error(`[Firestore MyGarden Load: getDocs FAILED] Error querying users/${userId}/userPlants:`, err);
     }
     return userPlantStates;
   },
@@ -478,15 +487,19 @@ export const firestoreStorageService = {
         this.migrateLegacyCustomPlants(userId, user).catch(() => {});
       }
 
+      console.log(`[Firestore MyGarden loadPlantsForUser] Initiating fetch for user: ${userId}`);
       const userPlantsRef = collection(db, 'users', userId, 'userPlants');
       const [userPlantsSnap, sharedPlants] = await Promise.all([
         getDocs(userPlantsRef),
         this.getSharedPlants(),
       ]);
 
+      console.log(`[Firestore MyGarden loadPlantsForUser] Retrieved ${userPlantsSnap.size} userPlant docs and ${sharedPlants.length} shared catalog plants.`);
       const userPlantStates = new Map<string, UserPlantStateDoc>();
       userPlantsSnap.forEach((docSnap) => {
-        userPlantStates.set(docSnap.id, docSnap.data() as UserPlantStateDoc);
+        const docData = docSnap.data() as UserPlantStateDoc;
+        console.log(`  -> [loadPlantsForUser Doc] ID: "${docSnap.id}" | inMyGarden: ${docData.inMyGarden}`);
+        userPlantStates.set(docSnap.id, docData);
       });
 
       // Combine base seed plants and all shared plants
@@ -539,6 +552,10 @@ export const firestoreStorageService = {
     userId: string,
     plant: Plant
   ): Promise<void> {
+    const targetPath = `users/${userId}/userPlants/${plant.id}`;
+    console.log(
+      `[Firestore MyGarden Write ATTEMPT] User: ${userId} | Plant ID: "${plant.id}" | Plant Name: "${plant.name}" | Setting inMyGarden: ${Boolean(plant.inMyGarden)} | Target Path: ${targetPath}`
+    );
     try {
       const stateDoc: Record<string, any> = {
         id: plant.id,
@@ -553,9 +570,15 @@ export const firestoreStorageService = {
       if (plant.fertilizerCustomDays) stateDoc.customFertilizerIntervalDays = plant.fertilizerCustomDays;
 
       await setDoc(doc(db, 'users', userId, 'userPlants', plant.id), sanitizeForFirestore(stateDoc), { merge: true });
+      console.log(
+        `[Firestore MyGarden Write SUCCESS] Plant ID: "${plant.id}" | Plant Name: "${plant.name}" | Successfully committed to Firestore at ${targetPath}`
+      );
     } catch (err) {
-      console.error('Failed to sync plant state to Firestore:', err);
-      handleFirestoreError(err, OperationType.WRITE, `users/${userId}/userPlants/${plant.id}`);
+      console.error(
+        `[Firestore MyGarden Write FAILED] Plant ID: "${plant.id}" | Plant Name: "${plant.name}" | Path: ${targetPath} | Exact Error:`,
+        err
+      );
+      handleFirestoreError(err, OperationType.WRITE, targetPath);
     }
   },
 
@@ -723,20 +746,25 @@ export const firestoreStorageService = {
     error?: string;
   }> {
     try {
+      console.log(`[Firestore Direct Server Query] Fetching un-cached docs from users/${userId}/userPlants directly from Google Cloud Firestore server...`);
       const userPlantsRef = collection(db, 'users', userId, 'userPlants');
       const snap = await getDocsFromServer(userPlantsRef);
       const docs: UserPlantStateDoc[] = [];
+      console.log(`[Firestore Direct Server Query SUCCESS] Server returned ${snap.size} documents for user ${userId}`);
       snap.forEach((d) => {
-        docs.push(d.data() as UserPlantStateDoc);
+        const docData = d.data() as UserPlantStateDoc;
+        console.log(`  -> [Direct Server Document] ID: "${d.id}" | inMyGarden: ${docData.inMyGarden} | isFavorite: ${docData.isFavorite} | updatedAt: ${docData.updatedAt}`);
+        docs.push(docData);
       });
       const inGardenCount = docs.filter((d) => Boolean(d.inMyGarden)).length;
+      console.log(`[Firestore Direct Server Query Summary] Total Docs: ${docs.length}, inMyGarden=true: ${inGardenCount}, inMyGarden=false: ${docs.length - inGardenCount}`);
       return {
         docs,
         inGardenCount,
         totalDocs: docs.length,
       };
     } catch (err: unknown) {
-      console.error('Failed to fetch raw user plant documents:', err);
+      console.error(`[Firestore Direct Server Query FAILED] Error fetching from users/${userId}/userPlants:`, err);
       return {
         docs: [],
         inGardenCount: 0,

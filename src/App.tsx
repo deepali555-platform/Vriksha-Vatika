@@ -246,9 +246,13 @@ export default function App() {
       setIsLoadingPlants(false);
 
       // Requirement 8: Add a brief console log of how many plants were loaded from the database and how many are displayed, so I can verify they match.
-      const myGardenCount = merged.filter((p) => Boolean(p.inMyGarden)).length;
+      const myGardenPlants = merged.filter((p) => Boolean(p.inMyGarden));
       console.log(
-        `[Terrace Garden Tracker] Database plants loaded: ${latestSharedPlants.length}, Displayed catalog count: ${uniqueReferenceCatalog.length}, My Garden count: ${myGardenCount}`
+        `[Terrace Garden Tracker] Database plants loaded: ${latestSharedPlants.length}, Displayed catalog count: ${uniqueReferenceCatalog.length}, My Garden count: ${myGardenPlants.length}`
+      );
+      console.log(
+        `[Terrace Garden Tracker - My Garden Plants Currently Active]:`,
+        myGardenPlants.map((p) => ({ id: p.id, name: p.name, botanicalName: p.botanicalName }))
       );
 
       // Update selectedPlantForDetail if currently open
@@ -261,8 +265,14 @@ export default function App() {
 
     if (user) {
       // 1. Subscribe to user's private plant states in real-time
+      console.log(`[App / User Login] Authenticated user active (UID: ${user.uid}). Setting up real-time listener for userPlants...`);
       unsubscribeUser = firestoreStorageService.subscribeToUserPlants(user.uid, (userStates) => {
         if (isCancelled) return;
+        console.log(`[App / UserPlants Listener Callback] Received ${userStates.size} userPlant document states from Firestore for UID: ${user.uid}`);
+        userStates.forEach((stateDoc, plantId) => {
+          console.log(`  -> [UserPlant State in Memory] ID: "${plantId}" | inMyGarden: ${stateDoc.inMyGarden} | isFavorite: ${stateDoc.isFavorite}`);
+        });
+
         // Merge pending local in-flight writes so rapid additions are not wiped out
         // by premature server snapshots before all writes complete!
         const mergedStates = new Map(userStates);
@@ -466,6 +476,10 @@ export default function App() {
       }
 
       if (user) {
+        console.log(
+          `[UI Action: Add to My Garden] User initiated toggle for Plant: "${target.name}" (ID: "${id}") | Target inMyGarden: ${nextVal} | Current Auth UID: ${user.uid}`
+        );
+
         const existingState = userPlantStatesRef.current.get(id);
         const updatedState: UserPlantStateDoc = {
           ...(existingState || {
@@ -485,10 +499,16 @@ export default function App() {
         userPlantStatesRef.current.set(id, updatedState);
 
         try {
+          console.log(
+            `[UI Action: Add to My Garden -> Firestore] Writing plant "${target.name}" (${id}) to users/${user.uid}/userPlants/${id}...`
+          );
           // Write to Firestore with timeout safety
           await firestoreStorageService.syncUserPlantState(user.uid, { ...target, inMyGarden: nextVal });
 
           // Write confirmed in Firestore cloud!
+          console.log(
+            `[UI Action: Add to My Garden SUCCESS] Write confirmed by Firestore server for plant "${target.name}" (${id}) | inMyGarden: ${nextVal}`
+          );
           pendingWritesRef.current.delete(id);
           setSavingGardenPlantIds((prev) => {
             const next = new Set(prev);
@@ -503,6 +523,10 @@ export default function App() {
           );
         } catch (err: any) {
           // Revert optimistic update on Firestore error
+          console.error(
+            `[UI Action: Add to My Garden FAILED] Write FAILED for plant "${target.name}" (${id}) to users/${user.uid}/userPlants/${id}:`,
+            err
+          );
           pendingWritesRef.current.delete(id);
           setSavingGardenPlantIds((prev) => {
             const next = new Set(prev);
@@ -520,7 +544,6 @@ export default function App() {
             userPlantStatesRef.current.delete(id);
           }
 
-          console.error(`[Add to My Garden Error] Failed to write plant "${target.name}" (${id}) to Firestore:`, err);
           showToast(`⚠️ Could not save "${target.name}" to My Garden: ${err?.message || 'Network error'}. Please try again.`);
         }
       } else {
