@@ -790,6 +790,22 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="max-w-6xl w-full mx-auto px-3 sm:px-6 lg:px-8 pt-4 sm:pt-6 flex-1 space-y-5 sm:space-y-6">
+        {/* Welcome Greeting for Authenticated Users - Cleanly Aligned & Consistent Across Views */}
+        {user && (
+          <div className="flex items-center justify-between gap-3 bg-white/80 backdrop-blur-xs border border-emerald-900/10 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-2xl shadow-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-base sm:text-lg leading-none shrink-0" role="img" aria-label="Waving hand">👋</span>
+              <p className="text-xs sm:text-sm text-stone-800 font-medium truncate">
+                Welcome back, <strong className="font-bold text-emerald-950">{getUserFirstName(user.displayName) || 'Gardener'}</strong>!
+              </p>
+            </div>
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200/80 shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Private Garden Synced
+            </span>
+          </div>
+        )}
+
         {/* VIEW 1: MY GARDEN (Owned Plants Only) */}
         {currentTab === 'my-garden' && (
           <div className="space-y-5 sm:space-y-6">
@@ -1070,18 +1086,6 @@ export default function App() {
         {/* VIEW 2: FULL REFERENCE GUIDE (All 21 Plants, Browsable at All Times) */}
         {currentTab === 'home' && (
           <div className="space-y-4 sm:space-y-6">
-            {/* Personalized Welcome Message for Logged-In Users */}
-            {user && (
-              <div className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-emerald-950 -mb-1 sm:-mb-2 animate-in fade-in duration-150">
-                <span className="text-sm sm:text-base leading-none">👋</span>
-                <span>
-                  {getUserFirstName(user.displayName)
-                    ? `Welcome back, ${getUserFirstName(user.displayName)}!`
-                    : 'Welcome back!'}
-                </span>
-              </div>
-            )}
-
             {/* Reference Guide Header Banner - Sleek & Compact on Mobile */}
             <div className="bg-gradient-to-br from-[#1c3e27] via-[#244b30] to-[#1a3824] text-stone-100 rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 lg:p-7 relative overflow-hidden shadow-md border border-emerald-700/40">
               <div className="max-w-2xl relative z-10 space-y-2 sm:space-y-2.5">

@@ -32,6 +32,14 @@ export const Header: React.FC<HeaderProps> = ({
 
   const isAdmin = Boolean(user?.email && isUserAdmin(user.email));
 
+  const getUserFirstName = (displayName?: string | null): string | null => {
+    if (!displayName) return null;
+    const trimmed = displayName.trim();
+    if (!trimmed) return null;
+    const first = trimmed.split(/\s+/)[0];
+    return first ? first.trim() : null;
+  };
+
   // Close profile dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -54,7 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
       {/* Subtle Botanical SVG Background Pattern */}
       <div className="absolute inset-0 overflow-hidden opacity-[0.04] pointer-events-none bg-[radial-gradient(#86efac_1px,transparent_1px)] [background-size:16px_16px]" />
 
-      <div className="w-full max-w-6xl mx-auto flex items-center justify-between relative z-10 gap-2 sm:gap-3 min-w-0">
+      <div className="w-full max-w-6xl mx-auto flex items-center justify-between relative z-10 gap-2 sm:gap-3 min-w-0" ref={profileMenuRef}>
         {/* Zone 1: Brand title with leaf icon */}
         <div className="flex items-center gap-2 min-w-0 shrink">
           <button
@@ -67,7 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
             <div className="min-w-0 truncate">
               <span className="text-sm sm:text-lg font-bold tracking-tight text-white group-hover:text-emerald-300 transition-colors truncate block">
-                Terrace Garden
+                Vriksha Vatika
               </span>
               <span className="hidden sm:block text-[10px] uppercase font-bold tracking-widest text-emerald-300/80 -mt-0.5 truncate">
                 Indian Balcony & Terrace
@@ -183,7 +191,49 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </nav>
 
-        {/* Zone 3: Primary Action buttons & Log in / Account - Hidden on mobile (< 768px), visible on desktop */}
+        {/* Mobile top-right: User Profile pill or Login */}
+        <div className="flex md:hidden items-center gap-1.5 shrink-0">
+          {user ? (
+            <button
+              type="button"
+              onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+              className="flex items-center gap-1.5 py-1 px-2 rounded-xl bg-emerald-900/80 border border-emerald-400/50 hover:bg-emerald-800 text-left transition-all active:scale-95 min-h-[40px] cursor-pointer"
+              aria-label="User account menu"
+              aria-expanded={isProfileMenuOpen}
+            >
+              {user.photoURL ? (
+                <img
+                  src={user.photoURL}
+                  alt={user.displayName || 'Profile'}
+                  className="w-7 h-7 rounded-lg object-cover border border-white/60 shrink-0"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white font-black flex items-center justify-center text-xs shrink-0 border border-white/40">
+                  {(user.displayName || user.email || 'U').charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="flex flex-col text-left leading-none justify-center">
+                <span className="text-[9px] text-emerald-300 font-medium">Welcome,</span>
+                <span className="text-xs font-bold text-white max-w-[85px] truncate mt-0.5">
+                  {getUserFirstName(user.displayName) || 'Gardener'}
+                </span>
+              </div>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenLoginModal}
+              className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-600 border border-emerald-500/70 rounded-xl transition-all active:scale-95 shadow-sm min-h-[38px] cursor-pointer"
+              aria-label="Log in to account"
+            >
+              <LogIn className="w-3.5 h-3.5 text-emerald-200 shrink-0" />
+              <span>Log in</span>
+            </button>
+          )}
+        </div>
+
+        {/* Zone 3: Primary Action buttons & Log in / Account - Desktop (>= 768px) */}
         <div className="hidden md:flex items-center gap-2 shrink-0 min-w-0">
           {onOpenScanModal && (
             <button
@@ -208,34 +258,42 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           {/* User Profile / Authentication Menu in Top-Right Corner */}
-          <div className="relative shrink-0" ref={profileMenuRef}>
+          <div className="relative shrink-0">
             {user ? (
-              <button
-                type="button"
-                onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-                className={`flex items-center justify-center gap-1.5 p-1 rounded-xl border transition-all min-h-[44px] min-w-[44px] cursor-pointer active:scale-95 ${
-                  isProfileMenuOpen
-                    ? 'bg-emerald-800 border-white ring-2 ring-emerald-400/60 shadow-md'
-                    : 'bg-emerald-900/80 hover:bg-emerald-800 border-emerald-400/60 hover:border-white shadow-xs'
-                }`}
-                title={`Logged in as ${user.displayName || user.email || 'Gardener'} (Click to view account and Log Out)`}
-                aria-label="User account menu"
-                aria-expanded={isProfileMenuOpen}
-              >
-                {user.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    alt={user.displayName || 'Profile'}
-                    className="w-8 h-8 rounded-lg object-cover border border-white/70 shrink-0"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white font-black flex items-center justify-center text-xs shrink-0 border border-white/50">
-                    {(user.displayName || user.email || 'U').charAt(0).toUpperCase()}
-                  </div>
-                )}
-                <span className="hidden sm:inline-block text-[10px] text-emerald-200 pr-0.5">▼</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <div className="hidden lg:flex flex-col items-end justify-center text-right leading-none">
+                  <span className="text-[10px] text-emerald-300/90 font-medium">Welcome,</span>
+                  <span className="text-xs font-bold text-white max-w-[130px] truncate mt-0.5">
+                    {getUserFirstName(user.displayName) || 'Gardener'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+                  className={`flex items-center justify-center gap-1.5 p-1 rounded-xl border transition-all min-h-[44px] min-w-[44px] cursor-pointer active:scale-95 ${
+                    isProfileMenuOpen
+                      ? 'bg-emerald-800 border-white ring-2 ring-emerald-400/60 shadow-md'
+                      : 'bg-emerald-900/80 hover:bg-emerald-800 border-emerald-400/60 hover:border-white shadow-xs'
+                  }`}
+                  title={`Logged in as ${user.displayName || user.email || 'Gardener'} (Click to view account and Log Out)`}
+                  aria-label="User account menu"
+                  aria-expanded={isProfileMenuOpen}
+                >
+                  {user.photoURL ? (
+                    <img
+                      src={user.photoURL}
+                      alt={user.displayName || 'Profile'}
+                      className="w-8 h-8 rounded-lg object-cover border border-white/70 shrink-0"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white font-black flex items-center justify-center text-xs shrink-0 border border-white/50">
+                      {(user.displayName || user.email || 'U').charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <span className="hidden sm:inline-block text-[10px] text-emerald-200 pr-0.5">▼</span>
+                </button>
+              </div>
             ) : (
               <button
                 type="button"
